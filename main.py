@@ -1,19 +1,35 @@
+import os
 import re
 import warnings
 
 import streamlit as st
 from langchain_core.messages import HumanMessage
-from snowflake.snowpark.exceptions import SnowparkSQLException
 
 from agent import MessagesState, create_agent
 
-# from utils.snow_connect import SnowflakeConnection
+from utils.snow_connect import SQLConnection
 from utils.snowchat_ui import StreamlitUICallbackHandler, message_func
 from utils.snowddl import Snowddl
+import pandas as pd
 
 warnings.filterwarnings("ignore")
 chat_history = []
 snow_ddl = Snowddl()
+
+# Try to get OpenAI API key from secrets or environment variable
+if 'NVIDIA_API_KEY' in st.secrets:
+    os.environ['NVIDIA_API_KEY'] = st.secrets['NVIDIA_API_KEY']
+elif 'NVIDIA_API_KEY' in os.environ:
+    st.secrets['NVIDIA_API_KEY'] = os.environ['NVIDIA_API_KEY']
+else:
+    # Provide a text input for the API key
+    api_key = st.text_input("Enter your NVIDIA API key:", type="password")
+    if api_key:
+        os.environ['NVIDIA_API_KEY'] = api_key
+        st.secrets['NVIDIA_API_KEY'] = api_key
+    else:
+        st.error("Please provide an NVIDIA API key!")
+        st.stop()
 
 gradient_text_html = """
 <style>
@@ -35,10 +51,12 @@ st.markdown(gradient_text_html, unsafe_allow_html=True)
 st.caption("Talk your way through data")
 
 model_options = {
-    "gpt-4o-mini": "GPT-4o Mini",
-    "llama-3.1-405b": "Llama 3.1 405B",
-    "llama-3.2-3b": "Llama 3.2 3B",
-    "Gemini Pro 1.5": "Gemini Pro 1.5",
+    # "gpt-4o": "GPT-4o",
+    "Llama 3.1 70B": "Llama 3.1 70B",
+#     "llama-3.1-405b": "Llama 3.1 405B",
+#     "llama-3.2-3b": "Llama 3.2 3B",
+#     "Gemini Pro 1.5": "Gemini Pro 1.5",
+# 
 }
 
 model = st.radio(
@@ -76,7 +94,7 @@ INITIAL_MESSAGE = [
     {"role": "user", "content": "Hi!"},
     {
         "role": "assistant",
-        "content": "Hey there, I'm Chatty McQueryFace, your SQL-speaking sidekick, ready to chat up Snowflake and fetch answers faster than a snowball fight in summer! ❄️🔍",
+        "content": "Hey there! I'm your SQL assistant, ready to help you query the database and find the information you need! 📊",
     },
 ]
 config = {"configurable": {"thread_id": "42"}}
@@ -103,7 +121,7 @@ if st.sidebar.button("Reset Chat"):
     st.session_state["history"] = []
 
 st.sidebar.markdown(
-    "**Note:** <span style='color:red'>The snowflake data retrieval is disabled for now.</span>",
+    "**Note:** Use natural language to ask questions about the data.",
     unsafe_allow_html=True,
 )
 
@@ -163,30 +181,26 @@ def append_message(content, role="assistant"):
 
 
 def handle_sql_exception(query, conn, e, retries=2):
-    # append_message("Uh oh, I made an error, let me try to fix it..")
-    # error_message = (
-    #     "You gave me a wrong SQL. FIX The SQL query by searching the schema definition:  \n```sql\n"
-    #     + query
-    #     + "\n```\n Error message: \n "
-    #     + str(e)
-    # )
-    # new_query = chain({"question": error_message, "chat_history": ""})["answer"]
-    # append_message(new_query)
-    # if get_sql(new_query) and retries > 0:
-    #     return execute_sql(get_sql(new_query), conn, retries - 1)
-    # else:
-    #     append_message("I'm sorry, I couldn't fix the error. Please try again.")
-    #     return None
-    pass
+    """Handle SQL execution errors"""
+    error_message = f"Error executing query: {str(e)}"
+    print(error_message)  # For debugging
+    append_message(f"I encountered an error: {error_message}")
+    return None
 
 
 def execute_sql(query, conn, retries=2):
+    """Execute SQL query with SQL Server connection"""
     if re.match(r"^\s*(drop|alter|truncate|delete|insert|update)\s", query, re.I):
         append_message("Sorry, I can't execute queries that can modify the database.")
         return None
     try:
-        return conn.sql(query).collect()
-    except SnowparkSQLException as e:
+        # Execute query using SQLConnection
+        result = conn.execute_query(query, use_cache=False)
+        # Convert result to pandas DataFrame
+        if result:
+            return pd.DataFrame(result)
+        return None
+    except Exception as e:
         return handle_sql_exception(query, conn, e, retries)
 
 
@@ -209,6 +223,22 @@ if (
         if result["messages"]:
             assistant_message = callback_handler.final_message
             append_message(assistant_message)
+            
+            # Check for SQL query in the response
+            sql_query = get_sql(assistant_message)
+            if sql_query:
+                try:
+                    # Create SQL connection and execute query
+                    sql_conn = SQLConnection()
+                    df = execute_sql(sql_query, sql_conn)
+                    if df is not None:
+                        # Display the DataFrame
+                        st.dataframe(df)
+                        # Store the result in chat history
+                        append_message(df.to_string(), "data")
+                except Exception as e:
+                    st.error(f"Error executing SQL query: {str(e)}")
+            
             st.session_state["assistant_response_processed"] = True
 
 
@@ -217,10 +247,3 @@ if (
     and st.session_state["messages"][-1]["content"] == ""
 ):
     st.session_state["rate-limit"] = True
-
-    # if get_sql(result):
-    #     conn = SnowflakeConnection().get_session()
-    #     df = execute_sql(get_sql(result), conn)
-    #     if df is not None:
-    #         callback_handler.display_dataframe(df)
-    #         append_message(df, "data", True)

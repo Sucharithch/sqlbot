@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Annotated, Sequence, Optional
 
 from langchain.callbacks.base import BaseCallbackHandler
-from langchain_anthropic import ChatAnthropic
+# from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -13,11 +13,12 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 from langchain_community.llms import Replicate
+from langchain.agents import Tool
 
-from tools import retriever_tool
-from tools import search, sql_executor_tool
+from tools import retriever_tool, search
 from PIL import Image
 from io import BytesIO
+from utils.snow_connect import SQLConnection
 
 @dataclass
 class MessagesState:
@@ -33,40 +34,59 @@ class ModelConfig:
     api_key: str
     base_url: Optional[str] = None
 
-
 model_configurations = {
-    "gpt-4o-mini": ModelConfig(
-        model_name="gpt-4o-mini", api_key=st.secrets["OPENAI_API_KEY"], base_url=f"https://gateway.ai.cloudflare.com/v1/{st.secrets['CLOUDFLARE_ACCOUNT_ID']}/snowchat/openai"
-    ),
-    "Gemini Pro 1.5": ModelConfig(
-        model_name="google/gemini-pro-1.5",
-        api_key=st.secrets["OPENROUTER_API_KEY"],
-        base_url="https://openrouter.ai/api/v1",
-    ),
+    # "gpt-4o": ModelConfig(
+    #     model_name="gpt-4o", 
+    #     api_key=os.getenv("OPENAI_API_KEY")
+    #     # OpenAI API key from .env is sufficient, no need for explicit base URL
+    # )
+    # "gpt-4o": ModelConfig(
+    #     model_name="gemini-pro",
+    #     api_key=st.secrets["GOOGLE_API_KEY"],
+    #     base_url="https://generativelanguage.googleapis.com/v1",
+    # ),
     # "Mistral 7B": ModelConfig(
     #     model_name="mistralai/mistral-7b-v0.1", api_key=st.secrets["REPLICATE_API_TOKEN"]
     # ),
-    "llama-3.2-3b": ModelConfig(
-        model_name="accounts/fireworks/models/llama-v3p2-3b-instruct",
-        api_key=st.secrets["FIREWORKS_API_KEY"],
-        base_url="https://api.fireworks.ai/inference/v1",
-    ),
-    "llama-3.1-405b": ModelConfig(
-        model_name="accounts/fireworks/models/llama-v3p1-405b-instruct",
-        api_key=st.secrets["FIREWORKS_API_KEY"],
-        base_url="https://api.fireworks.ai/inference/v1",
-    ),
+    # "llama-3.2-3b": ModelConfig(
+    #     model_name="accounts/fireworks/models/llama-v3p2-3b-instruct",
+    #     api_key=st.secrets["FIREWORKS_API_KEY"],
+    #     base_url="https://api.fireworks.ai/inference/v1",
+    # ),
+    # "llama-3.1-405b": ModelConfig(
+    #     model_name="accounts/fireworks/models/llama-v3p1-405b-instruct",
+    #     api_key=st.secrets["FIREWORKS_API_KEY"],
+    #     base_url="https://api.fireworks.ai/inference/v1",
+    # ),
+    "Llama 3.1 70B": ModelConfig(
+        model_name="nvidia/llama-3.1-nemotron-70b-instruct",
+        api_key=st.secrets["NVIDIA_API_KEY"],
+        base_url="https://integrate.api.nvidia.com/v1",
+    )
+
+    
 }
 sys_msg = SystemMessage(
-    content="""You're an AI assistant specializing in data analysis with Snowflake SQL. When providing responses, strive to exhibit friendliness and adopt a conversational tone, similar to how a friend or tutor would communicate. Do not ask the user for schema or database details. You have access to the following tools:
+    content="""You're an AI assistant specializing in data analysis with SQL server DB. When providing responses, strive to exhibit friendliness and adopt a conversational tone, similar to how a friend or tutor would communicate. Do not ask the user for schema or database details. You have access to the following tools:
     - Database_Schema: This tool allows you to search for database schema details when needed to generate the SQL code.
-    - Internet_Search: This tool allows you to search the internet for snowflake sql related information when needed to generate the SQL code.
-    - Snowflake_SQL_Executor: This tool allows you to execute snowflake sql queries when needed to generate the SQL code. You only have read access to the database, do not modify the database in any way.
+    - Internet_Search: This tool allows you to search the internet for SQL server DB related information when needed to generate the SQL code.
+    - SQL_Executor: This tool allows you to execute SQL server DB queries when needed to generate the SQL code. You only have read access to the database, do not modify the database in any way.
 
     Make sure to always return both the SQL code and the result of the query
     """
 )
-tools = [retriever_tool, search, sql_executor_tool]
+tools = [
+    Tool(
+        name="sql_query",
+        func=retriever_tool().run,
+        description="Useful for when you need to execute SQL queries"
+    ),
+    Tool(
+        name="search",
+        func=search().run,
+        description="Useful for when you need to search for information in the database"
+    )
+]
 
 def create_agent(callback_handler: BaseCallbackHandler, model_name: str) -> StateGraph:
     config = model_configurations.get(model_name)
@@ -83,7 +103,7 @@ def create_agent(callback_handler: BaseCallbackHandler, model_name: str) -> Stat
         streaming=True,
         base_url=config.base_url,
         temperature=0.01,
-        default_headers={"HTTP-Referer": "https://snowchat.streamlit.app/", "X-Title": "Snowchat"},
+        default_headers={"HTTP-Referer": "https://sql-bot.streamlit.app/", "X-Title": "SQL Bot"},
     )
 
     llm_with_tools = llm.bind_tools(tools)
