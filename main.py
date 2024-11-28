@@ -16,20 +16,34 @@ warnings.filterwarnings("ignore")
 chat_history = []
 snow_ddl = Snowddl()
 
+# Initialize database connection at startup
+@st.cache_resource
+def init_db():
+    db = SQLConnection()
+    return db
+
+# Initialize the database connection
+sql_conn = init_db()
+if not sql_conn:
+    st.stop()
+
 # Try to get OpenAI API key from secrets or environment variable
-if 'NVIDIA_API_KEY' in st.secrets:
-    os.environ['NVIDIA_API_KEY'] = st.secrets['NVIDIA_API_KEY']
-elif 'NVIDIA_API_KEY' in os.environ:
-    st.secrets['NVIDIA_API_KEY'] = os.environ['NVIDIA_API_KEY']
-else:
-    # Provide a text input for the API key
-    api_key = st.text_input("Enter your NVIDIA API key:", type="password")
-    if api_key:
-        os.environ['NVIDIA_API_KEY'] = api_key
-        st.secrets['NVIDIA_API_KEY'] = api_key
-    else:
-        st.error("Please provide an NVIDIA API key!")
-        st.stop()
+from dotenv import load_dotenv
+
+load_dotenv()
+
+nvidia_api_key = "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"
+# os.getenv('NVIDIA_API_KEY')
+# if nvidia_api_key:
+#     os.environ['NVIDIA_API_KEY'] = nvidia_api_key
+# else:
+#     # Provide a text input for the API key
+#     api_key = st.text_input("Enter your NVIDIA API key:", type="password")
+#     if api_key:
+#         os.environ['NVIDIA_API_KEY'] = api_key
+#     else:
+#         st.error("Please provide an NVIDIA API key!")
+#         st.stop()
 
 gradient_text_html = """
 <style>
@@ -189,19 +203,27 @@ def handle_sql_exception(query, conn, e, retries=2):
 
 
 def execute_sql(query, conn, retries=2):
-    """Execute SQL query with SQL Server connection"""
-    if re.match(r"^\s*(drop|alter|truncate|delete|insert|update)\s", query, re.I):
-        append_message("Sorry, I can't execute queries that can modify the database.")
+    """Execute SQL query with better error handling"""
+    if not query:
         return None
+        
+    # Check for unsafe operations
+    if re.match(r"^\s*(drop|alter|truncate|delete|insert|update)\s", query, re.I):
+        st.error("Sorry, I can't execute queries that modify the database.")
+        return None
+        
     try:
-        # Execute query using SQLConnection
-        result = conn.execute_query(query, use_cache=False)
-        # Convert result to pandas DataFrame
+        # Execute query using SQLConnection with caching
+        result = conn.execute_query(query, use_cache=True)
         if result:
-            return pd.DataFrame(result)
+            df = pd.DataFrame(result)
+            return df
         return None
     except Exception as e:
-        return handle_sql_exception(query, conn, e, retries)
+        st.error(f"Error executing query: {str(e)}")
+        if "timeout" in str(e).lower():
+            st.warning("The query timed out. Please try a simpler query or contact support.")
+        return None
 
 
 if (
@@ -212,33 +234,55 @@ if (
     user_input_content = st.session_state["messages"][-1]["content"]
 
     if isinstance(user_input_content, str):
-        # Start loading animation
-        callback_handler.start_loading_message()
+        try:
+            # Start loading animation
+            with st.spinner("Thinking..."):
+                callback_handler.start_loading_message()
 
-        messages = [HumanMessage(content=user_input_content)]
+                messages = [HumanMessage(content=user_input_content)]
+                state = MessagesState(messages=messages)
+                result = react_graph.invoke(state, config=config, debug=True)
 
-        state = MessagesState(messages=messages)
-        result = react_graph.invoke(state, config=config, debug=True)
-
-        if result["messages"]:
-            assistant_message = callback_handler.final_message
-            append_message(assistant_message)
-            
-            # Check for SQL query in the response
-            sql_query = get_sql(assistant_message)
-            if sql_query:
-                try:
-                    # Create SQL connection and execute query
-                    sql_conn = SQLConnection()
-                    df = execute_sql(sql_query, sql_conn)
-                    if df is not None:
-                        # Display the DataFrame
-                        st.dataframe(df)
-                        # Store the result in chat history
-                        append_message(df.to_string(), "data")
-                except Exception as e:
-                    st.error(f"Error executing SQL query: {str(e)}")
-            
+                if result["messages"]:
+                    assistant_message = callback_handler.final_message
+                    append_message(assistant_message)
+                    
+                    # Check for SQL query in the response
+                    sql_query = get_sql(assistant_message)
+                    if sql_query:
+                        with st.spinner("Executing query..."):
+                            df = execute_sql(sql_query, sql_conn)
+                            if df is not None and not df.empty:
+                                # Display the DataFrame with pagination
+                                st.write("Query Results:")
+                                page_size = 10
+                                total_rows = len(df)
+                                num_pages = (total_rows + page_size - 1) // page_size
+                                
+                                if num_pages > 1:
+                                    page = st.number_input(
+                                        "Page", 
+                                        min_value=1, 
+                                        max_value=num_pages, 
+                                        value=1
+                                    )
+                                    start_idx = (page - 1) * page_size
+                                    end_idx = min(start_idx + page_size, total_rows)
+                                    st.dataframe(df.iloc[start_idx:end_idx])
+                                    st.caption(f"Showing {start_idx+1}-{end_idx} of {total_rows} rows")
+                                else:
+                                    st.dataframe(df)
+                                
+                                # Store a summary in chat history
+                                summary = f"Query returned {total_rows} rows."
+                                append_message(summary, "data")
+                            else:
+                                st.info("Query returned no results.")
+                
+                st.session_state["assistant_response_processed"] = True
+                
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
             st.session_state["assistant_response_processed"] = True
 
 

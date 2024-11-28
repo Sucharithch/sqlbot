@@ -90,3 +90,10 @@ def retriever_tool():
 def search() -> SearchTool:
     """Create and return the search tool."""
     return SearchTool()
+
+# def sql_executor_tool(query: str, use_cache: bool = True) -> str:
+#     """
+#     Execute  sql queries with optional caching.
+#     """
+#     conn = SQLConnection()
+#     return conn.execute_query(query, use_cache)
