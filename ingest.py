@@ -8,6 +8,9 @@ from pydantic import BaseModel
 from utils.snow_connect import SQLConnection
 from sqlalchemy import text
 import numpy as np
+from dotenv import load_dotenv
+
+load_dotenv() 
 
 class Config(BaseModel):
     chunk_size: int = 1000
@@ -19,13 +22,21 @@ class Config(BaseModel):
 
 class DocumentProcessor:
     def __init__(self, api_key: str, config: Config):
-        self.sql_connection = SQLConnection()
-        self.engine = self.sql_connection.get_engine()
+        try:
+            self.sql_connection = SQLConnection()
+            self.engine = self.sql_connection.get_engine()
+            # Test connection
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+                print("Database connection successful!")
+        except Exception as e:
+            print(f"Database connection failed: {str(e)}")
+            raise
         self.loader = DirectoryLoader(config.docs_dir, glob=config.docs_glob)
         self.text_splitter = CharacterTextSplitter(
             chunk_size=config.chunk_size, chunk_overlap=config.chunk_overlap
         )
-        self.embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+        self.embeddings = OpenAIEmbeddings(openai_api_key=os.getenv('OPENAI_API_KEY'))
         self.embeddings_table = f"{config.schema_name}.{config.embeddings_table}"
 
     def _create_embeddings_table(self):
@@ -128,9 +139,9 @@ def main():
     print("Starting document processing...")
     
     # Get OpenAI API key from environment variable
-    api_key = os.getenv('OPENAI_API_KEY')
+    api_key = os.getenv('NVIDIA_API_KEY')
     if not api_key:
-        raise ValueError("Please set OPENAI_API_KEY environment variable")
+        raise ValueError("Please set NVIDIA_API_KEY environment variable")
     
     config = Config()
     processor = DocumentProcessor(api_key=api_key, config=config)
